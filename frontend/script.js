@@ -87,7 +87,7 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify(payload)
       });
       const data = await res.json().catch(()=>({}));
-      if(!res.ok){ if(authError){ authError.textContent = (data.detail && typeof data.detail === "string") ? data.detail : JSON.stringify(data); authError.classList.remove("hidden"); } return; }
+      if(!res.ok){ if(authError){ authError.textContent = (data && data.detail) ? data.detail : JSON.stringify(data); authError.classList.remove("hidden"); } return; }
       setToken(data.access_token);
       closeModal();
       updateAuthUI();
@@ -171,7 +171,11 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({transcript:text})
       });
       const data = await res.json().catch(()=>({}));
-      if(!res.ok){ alert("Server error: "+JSON.stringify(data)); return; }
+      if(!res.ok){
+        const msg = (data && data.detail) ? data.detail : JSON.stringify(data);
+        alert("Server error: " + msg);
+        return;
+      }
       if(transcriptEl) transcriptEl.value="";
       await fetchAndRenderTasks();
     }catch(e){ alert("Network error"); }
