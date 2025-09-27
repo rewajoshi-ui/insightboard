@@ -254,107 +254,148 @@ def login(data: RegisterIn):
 
 @app.post("/generate-tasks", response_model=List[TaskOut])
 def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)):
-    if not genai:
-        raise HTTPException(status_code=500, detail="genai sdk missing")
-    if not os.getenv("GEMINI_API_KEY"):
-        raise HTTPException(status_code=500, detail="api key missing")
-    client = genai.Client()
-    candidate_models = [
-        "models/gemini-2.5-flash",
-        "models/gemini-1.5-flash-latest",
-        "models/gemini-2.5-pro-preview-06-05"
-    ]
-    transcript = (data.transcript or "").strip()
-    if not transcript:
-        return []
-    system_instructions = (
-        "You are a strict JSON generator. Given a transcript chunk, return ONLY a JSON array of objects."
-        " Each object must have these keys exactly: "
-        "  - text (short summary <=120 chars),"
-        "  - assignee (string or null),"
-        "  - due (string or null),"
-        "  - priority (one of: High, Medium, Low)."
-        " Do NOT emit any markdown, commentary, bullet points, or speaker labels — ONLY the JSON array."
-        " If unsure, use null for optional fields. Keep text concise and action-oriented."
-    )
-    chunks = chunk_text(transcript, max_chars=3000)
-    aggregated = []
-    last_exc = None
-    for model in candidate_models:
-        try:
-            for chunk in chunks:
-                prompt = system_instructions + "\n\nTranscript chunk:\n" + chunk + "\n\nReturn JSON array of tasks."
-                text = try_generate(client, model, prompt)
-                parsed = safe_parse_json_like(text)
-                if isinstance(parsed, list) and parsed and all(isinstance(x, str) for x in parsed):
-                    parsed2 = []
-                    for s in parsed:
-                        s2 = strip_speaker_prefix(s)
-                        meta = extract_meta(s2)
-                        parsed2.append(meta)
-                    parsed = parsed2
-                if isinstance(parsed, dict):
-                    parsed = [parsed]
-                if not isinstance(parsed, list):
-                    parsed = safe_parse_json_like(str(parsed))
-                for item in parsed or []:
-                    if isinstance(item, str):
-                        raw = strip_speaker_prefix(item)
-                        meta = extract_meta(raw)
-                    elif isinstance(item, dict):
-                        txt = item.get("text") or item.get("task") or item.get("title") or ""
-                        txt = strip_speaker_prefix(str(txt))
-                        meta = extract_meta(txt)
-                        if item.get("assignee"):
-                            meta["assignee"] = item.get("assignee")
-                        if item.get("due"):
-                            meta["due"] = item.get("due")
-                        if item.get("priority"):
-                            p = str(item.get("priority")).capitalize()
-                            if p in ("High", "Medium", "Low"):
-                                meta["priority"] = p
-                    else:
-                        continue
-                    meta["text"] = shorten_text(meta["text"])
-                    if not meta.get("priority"):
-                        if re.search(r'\b(P0|blocker|urgent|must|ASAP|immediately)\b', meta["text"], flags=re.I):
-                            meta["priority"] = "High"
+    import traceback, sys, os, time
+    from sqlmodel import Session
+
+    if os.getenv("GEMINI_MOCK", "").lower() in ("1", "true", "yes"):
+        mock = [
+            {"text": "Follow up on payment bug", "assignee": None, "due": None, "priority": "High"},
+            {"text": "Schedule investigation meeting", "assignee": "David", "due": None, "priority": "Medium"}
+        ]
+        cleaned = []
+        with Session(engine) as session:
+            for item in mock:
+                dbt = DBTask(user_id=user.id, text=item["text"], status="pending", priority=item.get("priority"), created_at=time.time())
+                session.add(dbt)
+                session.commit()
+                session.refresh(dbt)
+                cleaned.append(TaskOut(id=dbt.id, text=dbt.text, status=dbt.status, priority=dbt.priority))
+        return cleaned
+
+    try:
+        if not genai:
+            raise HTTPException(status_code=500, detail="genai sdk missing on server")
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="GEMINI_API_KEY env var not set on server")
+
+        client = genai.Client()
+
+        candidate_models = [
+            "models/gemini-2.5-flash",
+            "models/gemini-1.5-flash-latest",
+            "models/gemini-2.5-pro-preview-06-05"
+        ]
+
+        transcript = (data.transcript or "").strip()
+        if not transcript:
+            return []
+
+        system_instructions = (
+            "You are a strict JSON generator. Given a transcript chunk, return ONLY a JSON array of objects."
+            " Each object must have these keys exactly: "
+            "  - text (short summary <=120 chars),"
+            "  - assignee (string or null),"
+            "  - due (string or null),"
+            "  - priority (one of: High, Medium, Low)."
+            " Do NOT emit any markdown, commentary, bullet points, or speaker labels — ONLY the JSON array."
+            " If unsure, use null for optional fields. Keep text concise and action-oriented."
+        )
+
+        chunks = chunk_text(transcript, max_chars=3000)
+        aggregated = []
+        last_exc = None
+
+        for model in candidate_models:
+            try:
+                for chunk in chunks:
+                    prompt = system_instructions + "\n\nTranscript chunk:\n" + chunk + "\n\nReturn JSON array of tasks."
+                    text = try_generate(client, model, prompt)
+                    parsed = safe_parse_json_like(text)
+
+                    if isinstance(parsed, list) and parsed and all(isinstance(x, str) for x in parsed):
+                        parsed2 = []
+                        for s in parsed:
+                            s2 = strip_speaker_prefix(s)
+                            meta = extract_meta(s2)
+                            parsed2.append(meta)
+                        parsed = parsed2
+
+                    if isinstance(parsed, dict):
+                        parsed = [parsed]
+
+                    if not isinstance(parsed, list):
+                        parsed = safe_parse_json_like(str(parsed))
+
+                    for item in parsed or []:
+                        if isinstance(item, str):
+                            raw = strip_speaker_prefix(item)
+                            meta = extract_meta(raw)
+                        elif isinstance(item, dict):
+                            txt = item.get("text") or item.get("task") or item.get("title") or ""
+                            txt = strip_speaker_prefix(str(txt))
+                            meta = extract_meta(txt)
+                            if item.get("assignee"):
+                                meta["assignee"] = item.get("assignee")
+                            if item.get("due"):
+                                meta["due"] = item.get("due")
+                            if item.get("priority"):
+                                p = str(item.get("priority")).capitalize()
+                                if p in ("High", "Medium", "Low"):
+                                    meta["priority"] = p
                         else:
-                            meta["priority"] = "Medium"
-                    if meta["text"]:
-                        aggregated.append(meta)
-            if aggregated:
-                break
-        except Exception as e:
-            last_exc = e
-            continue
-    if not aggregated:
-        detail = {
-            "message": "no candidate model worked",
-            "tried": candidate_models,
-            "last_error": str(last_exc)
-        }
-        raise HTTPException(status_code=500, detail=json.dumps(detail))
-    cleaned = []
-    seen = set()
-    with Session(engine) as session:
-        for item in aggregated:
-            key = item["text"].lower()
-            if key in seen:
+                            continue
+
+                        meta["text"] = shorten_text(meta["text"])
+                        if not meta.get("priority"):
+                            if re.search(r'\b(P0|blocker|urgent|must|ASAP|immediately)\b', meta["text"], flags=re.I):
+                                meta["priority"] = "High"
+                            else:
+                                meta["priority"] = "Medium"
+                        if meta["text"]:
+                            aggregated.append(meta)
+                if aggregated:
+                    break
+            except Exception as e:
+                last_exc = e
                 continue
-            seen.add(key)
-            dbt = DBTask(
-                user_id=user.id,
-                text=item["text"],
-                status="pending",
-                priority=item.get("priority"),
-                created_at=time.time()
-            )
-            session.add(dbt)
-            session.commit()
-            session.refresh(dbt)
-            cleaned.append(TaskOut(id=dbt.id, text=dbt.text, status=dbt.status, priority=dbt.priority))
-    return cleaned
+
+        if not aggregated:
+            detail = {
+                "message": "no candidate model worked",
+                "tried": candidate_models,
+                "last_error": str(last_exc)
+            }
+            raise HTTPException(status_code=500, detail=json.dumps(detail))
+
+        cleaned = []
+        seen = set()
+        with Session(engine) as session:
+            for item in aggregated:
+                key = item["text"].lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                dbt = DBTask(
+                    user_id=user.id,
+                    text=item["text"],
+                    status="pending",
+                    priority=item.get("priority"),
+                    created_at=time.time()
+                )
+                session.add(dbt)
+                session.commit()
+                session.refresh(dbt)
+                cleaned.append(TaskOut(id=dbt.id, text=dbt.text, status=dbt.status, priority=dbt.priority))
+        return cleaned
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        tb = traceback.format_exc()
+        print("ERROR in generate_tasks:", str(e), file=sys.stderr)
+        print(tb, file=sys.stderr)
+        raise HTTPException(status_code=500, detail=f"server exception: {str(e)}")
 
 @app.get("/tasks", response_model=List[TaskOut])
 def list_tasks(user: User = Depends(get_current_user)):
