@@ -11,25 +11,25 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 
 try:
-import google.genai as genai
+    import google.genai as genai
 except Exception:
-try:
-from google import genai
-except Exception:
-try:
-import genai
-except Exception:
-genai = None
+    try:
+        from google import genai
+    except Exception:
+        try:
+            import genai
+        except Exception:
+            genai = None
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 print("DEBUG: GEMINI_API_KEY present? ->", "set" if API_KEY else "missing")
 if genai and API_KEY:
-try:
-genai.configure(api_key=API_KEY)
-except Exception as e:
-print("DEBUG: genai.configure raised:", repr(e))
+    try:
+        genai.configure(api_key=API_KEY)
+    except Exception as e:
+        print("DEBUG: genai.configure raised:", repr(e))
 
 SECRET_KEY = os.getenv("JWT_SECRET", "devsecretkey")
 ALGORITHM = "HS256"
