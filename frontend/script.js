@@ -1,9 +1,23 @@
 const API_BASE = window.location.origin;
 const getToken = () => localStorage.getItem("access_token");
 const setToken = (t) => { if (t) localStorage.setItem("access_token", t); else localStorage.removeItem("access_token"); };
-function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;'}[c])); }
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.body.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('button');
+    if (!btn) return;
+    try {
+      if (typeof btn.onclick === 'function') { try { btn.onclick.call(btn, e); } catch (err) {} }
+      const action = btn.dataset.action || btn.getAttribute('data-action') || btn.id || null;
+      if (action) {
+        const ev = new CustomEvent('app:button-click', { detail: { action, button: btn, originalEvent: e } });
+        document.dispatchEvent(ev);
+      }
+    } catch (err) {}
+  }, true);
+
   const authModal = document.getElementById("auth-modal");
   const modalTitle = document.getElementById("modal-title");
   const authError = document.getElementById("auth-error");
@@ -110,6 +124,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }catch(e){}
   }
 
+  document.addEventListener("app:button-click", async (ev)=>{
+    const { action, button } = ev.detail || {};
+    if(!action) return;
+    if(action === "show-login" && typeof window.showLogin === 'function') return window.showLogin(button);
+    if(action === "generate" && typeof window.handleGenerate === 'function') return window.handleGenerate(button);
+    if(action === "complete" || action === "delete"){
+      const id = button.getAttribute("data-id");
+      const token = getToken();
+      if(!token) return;
+      try{
+        if(action === "complete") await fetch(`${API_BASE}/tasks/${id}/complete`, {method:"POST", headers:{Authorization:"Bearer "+token}});
+        else await fetch(`${API_BASE}/tasks/${id}`, {method:"DELETE", headers:{Authorization:"Bearer "+token}});
+        await fetchAndRenderTasks();
+      }catch(e){}
+    }
+  });
+
   document.addEventListener("click", async (e)=>{
     const btn = e.target.closest("button[data-id]");
     if(!btn) return;
@@ -132,7 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if(!text) return;
     generateBtn.disabled=true;
     const origText = generateBtn.textContent;
-    generateBtn.textContent="Generating...";
+    generateBtn.textContent="Generating..."
     try{
       const res = await fetch(`${API_BASE}/generate-tasks`, {
         method:"POST",
