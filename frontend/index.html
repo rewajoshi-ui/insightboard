@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>InsightBoard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800">
+  <div class="max-w-4xl mx-auto p-6">
+    <header class="flex items-center justify-between mb-6">
+      <h1 id="app-title" class="text-2xl font-semibold">InsightBoard</h1>
+      <div id="auth-controls" class="space-x-2">
+        <button id="show-login" class="px-3 py-1 bg-white border rounded">Log in</button>
+        <button id="show-register" class="px-3 py-1 bg-blue-600 text-white rounded">Register</button>
+        <button id="logout-btn" class="px-3 py-1 bg-red-600 text-white rounded hidden">Logout</button>
+      </div>
+    </header>
+
+    <main class="bg-white p-6 rounded shadow">
+      <label class="block text-sm font-medium mb-2">Paste meeting transcript</label>
+      <textarea id="transcript" rows="8" class="w-full p-3 border rounded mb-3"></textarea>
+
+      <div class="flex items-center gap-3">
+        <button id="generate-btn" class="px-4 py-2 bg-green-600 text-white rounded">Generate Tasks</button>
+        <span id="note" class="text-xs text-gray-500">Note: Run backend and set GEMINI_API_KEY in env.</span>
+      </div>
+
+      <section class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="md:col-span-2">
+          <h2 class="text-lg font-medium mb-3">Tasks</h2>
+          <ul id="tasks-list" class="space-y-3"></ul>
+        </div>
+
+        <div class="p-4 bg-slate-50 rounded shadow">
+          <h3 class="font-medium mb-2">Progress</h3>
+          <canvas id="pieChart" width="200" height="200"></canvas>
+          <div id="progress-text" class="text-sm text-center mt-2">Completed vs pending</div>
+        </div>
+      </section>
+
+      <footer class="mt-6 text-center text-xs text-gray-400">
+        Built with FastAPI and Gemini.
+      </footer>
+    </main>
+  </div>
+
+  <div id="modal-root">
+    <div id="auth-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center">
+      <div class="bg-white rounded p-6 w-full max-w-md">
+        <h3 id="modal-title" class="text-lg font-semibold mb-3">Login</h3>
+        <div id="auth-error" class="text-sm text-red-600 mb-2 hidden"></div>
+
+        <input id="name-input" placeholder="Name (register only)" class="w-full p-2 border rounded mb-2 hidden" />
+        <input id="email-input" type="email" placeholder="Email" class="w-full p-2 border rounded mb-2" />
+        <input id="password-input" type="password" placeholder="Password" class="w-full p-2 border rounded mb-4" />
+
+        <div class="flex justify-end gap-2">
+          <button id="auth-cancel" class="px-3 py-1 border rounded">Cancel</button>
+          <button id="auth-submit" class="px-4 py-1 bg-blue-600 text-white rounded">Submit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
