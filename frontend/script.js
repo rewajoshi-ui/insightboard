@@ -1,12 +1,4 @@
-const API_BASE = (() => {
-  try {
-    const origin = window.location.origin;
-    if (origin && origin !== 'null' && !origin.startsWith('file:')) return origin;
-  } catch(e){}
-  return 'http://127.0.0.1:8000';
-})();
-
-
+const API_BASE = window.location.origin;
 const getToken = () => localStorage.getItem("access_token");
 const setToken = (t) => { if (t) localStorage.setItem("access_token", t); else localStorage.removeItem("access_token"); };
 
