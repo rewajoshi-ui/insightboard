@@ -1,9 +1,10 @@
-# backend/main.py
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
-import os, traceback, json, re, time
+import os, json, re, time
+from starlette.responses import FileResponse
 from sqlmodel import select, Session, SQLModel, Field
 from backend.db import create_db_and_tables, engine
 from passlib.context import CryptContext
@@ -20,7 +21,6 @@ except Exception:
         except Exception:
             genai = None
 
-# Use pbkdf2_sha256 to avoid bcrypt binary issues on some systems
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -34,7 +34,6 @@ SECRET_KEY = os.getenv("JWT_SECRET", "devsecretkey")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
-# --- DB Models -------------------------------------------------------------
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     email: str = Field(index=True)
@@ -46,10 +45,9 @@ class DBTask(SQLModel, table=True):
     user_id: int = Field(index=True)
     text: str
     status: str = "pending"
-    priority: Optional[str] = None  # High / Medium / Low
+    priority: Optional[str] = None
     created_at: Optional[float] = None
 
-# --- Pydantic / Input/Output ----------------------------------------------
 class TranscriptInput(BaseModel):
     transcript: str
 
@@ -69,9 +67,7 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
     user: str
 
-# --- Helpers ---------------------------------------------------------------
 def get_password_hash(password: str) -> str:
-    # Keep it short to avoid edge cases; passlib pbkdf2 handles arbitrary lengths
     return pwd_context.hash(password)
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -81,17 +77,14 @@ def create_access_token(data: dict):
     to_encode = data.copy()
     expire = time.time() + ACCESS_TOKEN_EXPIRE_MINUTES * 60
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def decode_access_token(token: str):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
     except JWTError:
         return None
 
-# initialize DB tables
 create_db_and_tables()
 
 app = FastAPI()
@@ -102,11 +95,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/", include_in_schema=False)
+async def root():
+    index_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
     return {"msg": "backend running"}
 
-# --- Text chunking & parsing utilities ------------------------------------
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    index_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"detail": "Not Found"}
+
 def chunk_text(text, max_chars=3000):
     parts = []
     start = 0
@@ -131,14 +137,12 @@ def safe_parse_json_like(s):
         return json.loads(s)
     except:
         pass
-    # attempt to find first JSON array/object in text
     m = re.search(r'(\[.*\]|\{.*\})', s, flags=re.S)
     if m:
         try:
             return json.loads(m.group(1))
         except:
             pass
-    # fallback: split into lines and return list of strings
     lines = []
     for ln in s.splitlines():
         ln = ln.strip()
@@ -156,7 +160,6 @@ def strip_speaker_prefix(text):
 
 def extract_meta(text):
     meta = {"text": text.strip(), "assignee": None, "due": None, "priority": None}
-    # (Due: ...), (When: ...), simple heuristics for assignee
     m = re.search(r'\(Due[:\s]+([^\)]+)\)', text, flags=re.I)
     if m:
         meta["due"] = m.group(1).strip()
@@ -165,14 +168,12 @@ def extract_meta(text):
     if m2 and not meta["due"]:
         meta["due"] = m2.group(1).strip()
         meta["text"] = re.sub(r'\(When[:\s]+[^\)]+\)', '', meta["text"]).strip()
-    # guess assignee from beginning name token
     m3 = re.search(r'^\s*([A-Z][a-z]+)\b', text)
     if m3:
         name = m3.group(1)
         if name and len(name) <= 20:
             meta["assignee"] = name.strip()
     meta["text"] = re.sub(r'^[\-\*\s\#\u2022]+', '', meta["text"]).strip()
-    # attempt to detect explicit "Priority: High" pattern
     m4 = re.search(r'Priority[:\s]+(High|Medium|Low)', text, flags=re.I)
     if m4:
         meta["priority"] = m4.group(1).capitalize()
@@ -191,7 +192,6 @@ def shorten_text(s, max_len=120):
         return cut[:brk2+1].strip()
     return cut.strip() + "..."
 
-# --- GenAI calling helper -------------------------------------------------
 def try_generate(client, model, prompt, max_retries=2):
     for attempt in range(max_retries):
         try:
@@ -210,7 +210,6 @@ def try_generate(client, model, prompt, max_retries=2):
             continue
     raise Exception("model call failed")
 
-# --- Auth dependency ------------------------------------------------------
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="authorization header missing")
@@ -229,7 +228,6 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="user not found")
         return user
 
-# --- Auth endpoints -------------------------------------------------------
 @app.post("/register", response_model=TokenOut)
 def register(data: RegisterIn):
     with Session(engine) as session:
@@ -254,7 +252,6 @@ def login(data: RegisterIn):
         token = create_access_token({"sub": user.email})
         return {"access_token": token, "user": user.name or user.email}
 
-# --- Task generation & management -----------------------------------------
 @app.post("/generate-tasks", response_model=List[TaskOut])
 def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)):
     if not genai:
@@ -262,18 +259,14 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
     if not os.getenv("GEMINI_API_KEY"):
         raise HTTPException(status_code=500, detail="api key missing")
     client = genai.Client()
-
     candidate_models = [
         "models/gemini-2.5-flash",
         "models/gemini-1.5-flash-latest",
         "models/gemini-2.5-pro-preview-06-05"
     ]
-
     transcript = (data.transcript or "").strip()
     if not transcript:
         return []
-
-    # Strict system instructions requesting priority and only JSON
     system_instructions = (
         "You are a strict JSON generator. Given a transcript chunk, return ONLY a JSON array of objects."
         " Each object must have these keys exactly: "
@@ -284,19 +277,15 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
         " Do NOT emit any markdown, commentary, bullet points, or speaker labels — ONLY the JSON array."
         " If unsure, use null for optional fields. Keep text concise and action-oriented."
     )
-
     chunks = chunk_text(transcript, max_chars=3000)
     aggregated = []
     last_exc = None
-
     for model in candidate_models:
         try:
             for chunk in chunks:
                 prompt = system_instructions + "\n\nTranscript chunk:\n" + chunk + "\n\nReturn JSON array of tasks."
                 text = try_generate(client, model, prompt)
                 parsed = safe_parse_json_like(text)
-
-                # If parsed is list of strings (fallback), convert to dicts heuristically
                 if isinstance(parsed, list) and parsed and all(isinstance(x, str) for x in parsed):
                     parsed2 = []
                     for s in parsed:
@@ -304,15 +293,10 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                         meta = extract_meta(s2)
                         parsed2.append(meta)
                     parsed = parsed2
-
-                # If parsed is single dict, wrap it
                 if isinstance(parsed, dict):
                     parsed = [parsed]
-
                 if not isinstance(parsed, list):
-                    # try one more parse attempt: split lines then heuristics
                     parsed = safe_parse_json_like(str(parsed))
-
                 for item in parsed or []:
                     if isinstance(item, str):
                         raw = strip_speaker_prefix(item)
@@ -321,7 +305,6 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                         txt = item.get("text") or item.get("task") or item.get("title") or ""
                         txt = strip_speaker_prefix(str(txt))
                         meta = extract_meta(txt)
-                        # prefer model-provided fields when present
                         if item.get("assignee"):
                             meta["assignee"] = item.get("assignee")
                         if item.get("due"):
@@ -332,10 +315,8 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                                 meta["priority"] = p
                     else:
                         continue
-
                     meta["text"] = shorten_text(meta["text"])
                     if not meta.get("priority"):
-                        # default heuristic: High if contains words like "must", "priority", "blocker", "P0"
                         if re.search(r'\b(P0|blocker|urgent|must|ASAP|immediately)\b', meta["text"], flags=re.I):
                             meta["priority"] = "High"
                         else:
@@ -347,7 +328,6 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
         except Exception as e:
             last_exc = e
             continue
-
     if not aggregated:
         detail = {
             "message": "no candidate model worked",
@@ -355,8 +335,6 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
             "last_error": str(last_exc)
         }
         raise HTTPException(status_code=500, detail=json.dumps(detail))
-
-    # dedupe and persist
     cleaned = []
     seen = set()
     with Session(engine) as session:
@@ -406,5 +384,3 @@ def delete_task(task_id: int, user: User = Depends(get_current_user)):
             session.delete(t)
             session.commit()
     return {"msg": "deleted"}
-
-
