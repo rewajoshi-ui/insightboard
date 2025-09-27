@@ -124,10 +124,7 @@ try:
 return json.loads(s)
 except:
 pass
-m = re.search(r'(
-.
-∗
-.∗|{.*})', s, flags=re.S)
+m = re.search(r'(\[.*\]|\{.*\})', s, flags=re.S)
 if m:
 try:
 return json.loads(m.group(1))
