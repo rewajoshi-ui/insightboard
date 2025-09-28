@@ -57,13 +57,14 @@
         <input id="password-input" type="password" placeholder="Password" class="w-full p-2 border rounded mb-4" />
 
         <div class="flex justify-end gap-2">
-          <button id="auth-cancel" class="px-3 py-1 border rounded">Cancel</button>
+          <button id="auth-cancel" data-close class="px-3 py-1 border rounded">Cancel</button>
           <button id="auth-submit" class="px-4 py-1 bg-blue-600 text-white rounded">Submit</button>
         </div>
       </div>
     </div>
   </div>
 
+  <!-- main frontend script: put the JS provided earlier into /static/script.js -->
   <script src="/static/script.js" defer></script>
 </body>
 </html>
