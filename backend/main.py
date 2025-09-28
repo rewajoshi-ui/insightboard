@@ -113,13 +113,6 @@ def debug_key():
     key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
     return {"key_set": bool(key), "length": len(key) if key else 0}
 
-@app.get("/{full_path:path}", include_in_schema=False)
-async def spa_fallback(full_path: str):
-    index_path = os.path.join(static_dir, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"detail": "Not Found"}
-
 def chunk_text(text, max_chars=3000):
     parts = []
     start = 0
@@ -370,4 +363,38 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
         print(tb, file=sys.stderr)
         raise HTTPException(status_code=500, detail=f"server exception: {str(e)}")
 
+@app.get("/tasks", response_model=List[TaskOut])
+def list_tasks(user: User = Depends(get_current_user)):
+    with Session(engine) as session:
+        stmt = select(DBTask).where(DBTask.user_id == user.id)
+        rows = session.exec(stmt).all()
+        return [TaskOut(id=r.id, text=r.text, status=r.status, priority=r.priority) for r in rows]
 
+@app.post("/tasks/{task_id}/complete")
+def complete_task(task_id: int, user: User = Depends(get_current_user)):
+    with Session(engine) as session:
+        stmt = select(DBTask).where(DBTask.id == task_id, DBTask.user_id == user.id)
+        t = session.exec(stmt).first()
+        if not t:
+            raise HTTPException(status_code=404, detail="not found")
+        t.status = "completed"
+        session.add(t)
+        session.commit()
+        return {"msg": "done"}
+
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: int, user: User = Depends(get_current_user)):
+    with Session(engine) as session:
+        stmt = select(DBTask).where(DBTask.id == task_id, DBTask.user_id == user.id)
+        t = session.exec(stmt).first()
+        if t:
+            session.delete(t)
+            session.commit()
+    return {"msg": "deleted"}
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    index_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"detail": "Not Found"}
