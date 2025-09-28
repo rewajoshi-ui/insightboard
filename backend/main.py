@@ -23,8 +23,10 @@ except Exception:
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-print("DEBUG: GEMINI_API_KEY present? ->", "set" if API_KEY else "missing")
+# ✅ Accept either GOOGLE_API_KEY or GEMINI_API_KEY
+API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+print("DEBUG: GOOGLE_API_KEY or GEMINI_API_KEY present? ->", "set" if API_KEY else "missing")
+
 if genai and API_KEY:
     try:
         genai.configure(api_key=API_KEY)
@@ -116,6 +118,7 @@ async def spa_fallback(full_path: str):
         return FileResponse(index_path)
     return {"detail": "Not Found"}
 
+# ----------------- helper funcs -----------------
 def chunk_text(text, max_chars=3000):
     parts = []
     start = 0
@@ -213,6 +216,7 @@ def try_generate(client, model, prompt, max_retries=2):
             continue
     raise Exception("model call failed")
 
+# ----------------- auth helpers -----------------
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="authorization header missing")
@@ -231,6 +235,7 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="user not found")
         return user
 
+# ----------------- auth routes -----------------
 @app.post("/register", response_model=TokenOut)
 def register(data: RegisterIn):
     with Session(engine) as session:
@@ -255,6 +260,7 @@ def login(data: RegisterIn):
         token = create_access_token({"sub": user.email})
         return {"access_token": token, "user": user.name or user.email}
 
+# ----------------- task generation -----------------
 @app.post("/generate-tasks", response_model=List[TaskOut])
 def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)):
     if os.getenv("GEMINI_MOCK", "").lower() in ("1", "true", "yes"):
@@ -271,24 +277,36 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                 session.refresh(dbt)
                 cleaned.append(TaskOut(id=dbt.id, text=dbt.text, status=dbt.status, priority=dbt.priority))
         return cleaned
+
     try:
         if not genai:
             raise HTTPException(status_code=500, detail="genai sdk missing on server")
-        api_key = os.getenv("GEMINI_API_KEY")
+
+        # ✅ use GOOGLE_API_KEY or GEMINI_API_KEY
+        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise HTTPException(status_code=500, detail="GEMINI_API_KEY env var not set on server")
-        client = genai.Client()
-        candidate_models = ["models/gemini-2.5-flash","models/gemini-1.5-flash-latest","models/gemini-2.5-pro-preview-06-05"]
+            raise HTTPException(status_code=500, detail="Google/Gemini API key not set on server")
+
+        client = genai.Client(api_key=api_key)
+
+        candidate_models = [
+            "models/gemini-2.5-flash",
+            "models/gemini-1.5-flash-latest",
+            "models/gemini-2.5-pro-preview-06-05"
+        ]
         transcript = (data.transcript or "").strip()
         if not transcript:
             return []
+
         system_instructions = (
             "You are a strict JSON generator. Given a transcript chunk, return ONLY a JSON array of objects."
             " Each object must have keys: text, assignee, due, priority."
         )
+
         chunks = chunk_text(transcript, max_chars=3000)
         aggregated = []
         last_exc = None
+
         for model in candidate_models:
             try:
                 for chunk in chunks:
@@ -327,8 +345,10 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
             except Exception as e:
                 last_exc = e
                 continue
+
         if not aggregated:
             raise HTTPException(status_code=500, detail="no candidate model worked")
+
         cleaned = []
         seen = set()
         with Session(engine) as session:
@@ -342,7 +362,9 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                 session.commit()
                 session.refresh(dbt)
                 cleaned.append(TaskOut(id=dbt.id, text=dbt.text, status=dbt.status, priority=dbt.priority))
+
         return cleaned
+
     except HTTPException:
         raise
     except Exception as e:
@@ -351,6 +373,7 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
         print(tb, file=sys.stderr)
         raise HTTPException(status_code=500, detail=f"server exception: {str(e)}")
 
+# ----------------- task CRUD -----------------
 @app.get("/tasks", response_model=List[TaskOut])
 def list_tasks(user: User = Depends(get_current_user)):
     with Session(engine) as session:
@@ -379,4 +402,5 @@ def delete_task(task_id: int, user: User = Depends(get_current_user)):
             session.delete(t)
             session.commit()
     return {"msg": "deleted"}
+
 
