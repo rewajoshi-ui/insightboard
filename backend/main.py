@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,15 +23,12 @@ except Exception:
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
-# ✅ Accept either GOOGLE_API_KEY or GEMINI_API_KEY
 API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-print("DEBUG: GOOGLE_API_KEY or GEMINI_API_KEY present? ->", "set" if API_KEY else "missing")
-
 if genai and API_KEY:
     try:
         genai.configure(api_key=API_KEY)
-    except Exception as e:
-        print("DEBUG: genai.configure raised:", repr(e))
+    except Exception:
+        pass
 
 SECRET_KEY = os.getenv("JWT_SECRET", "devsecretkey")
 ALGORITHM = "HS256"
@@ -111,6 +108,11 @@ async def root():
         return FileResponse(index_path)
     return {"msg": "backend running"}
 
+@app.get("/debug-key")
+def debug_key():
+    key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    return {"key_set": bool(key), "length": len(key) if key else 0}
+
 @app.get("/{full_path:path}", include_in_schema=False)
 async def spa_fallback(full_path: str):
     index_path = os.path.join(static_dir, "index.html")
@@ -118,7 +120,6 @@ async def spa_fallback(full_path: str):
         return FileResponse(index_path)
     return {"detail": "Not Found"}
 
-# ----------------- helper funcs -----------------
 def chunk_text(text, max_chars=3000):
     parts = []
     start = 0
@@ -216,7 +217,6 @@ def try_generate(client, model, prompt, max_retries=2):
             continue
     raise Exception("model call failed")
 
-# ----------------- auth helpers -----------------
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization:
         raise HTTPException(status_code=401, detail="authorization header missing")
@@ -235,7 +235,6 @@ def get_current_user(authorization: Optional[str] = Header(None)):
             raise HTTPException(status_code=401, detail="user not found")
         return user
 
-# ----------------- auth routes -----------------
 @app.post("/register", response_model=TokenOut)
 def register(data: RegisterIn):
     with Session(engine) as session:
@@ -260,7 +259,6 @@ def login(data: RegisterIn):
         token = create_access_token({"sub": user.email})
         return {"access_token": token, "user": user.name or user.email}
 
-# ----------------- task generation -----------------
 @app.post("/generate-tasks", response_model=List[TaskOut])
 def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)):
     if os.getenv("GEMINI_MOCK", "").lower() in ("1", "true", "yes"):
@@ -282,7 +280,6 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
         if not genai:
             raise HTTPException(status_code=500, detail="genai sdk missing on server")
 
-        # ✅ use GOOGLE_API_KEY or GEMINI_API_KEY
         api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise HTTPException(status_code=500, detail="Google/Gemini API key not set on server")
@@ -313,10 +310,11 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                     prompt = system_instructions + "\n\nTranscript chunk:\n" + chunk + "\n\nReturn JSON array of tasks."
                     text = try_generate(client, model, prompt)
                     parsed = safe_parse_json_like(text)
-                    if isinstance(parsed, dict):
-                        parsed = [parsed]
                     if not isinstance(parsed, list):
-                        parsed = safe_parse_json_like(str(parsed))
+                        if isinstance(parsed, dict):
+                            parsed = [parsed]
+                        else:
+                            parsed = [{"text": ln.strip()} for ln in str(text).splitlines() if ln.strip()]
                     for item in parsed or []:
                         if isinstance(item, str):
                             raw = strip_speaker_prefix(item)
@@ -331,7 +329,7 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                                 meta["due"] = item.get("due")
                             if item.get("priority"):
                                 p = str(item.get("priority")).capitalize()
-                                if p in ("High","Medium","Low"):
+                                if p in ("High", "Medium", "Low"):
                                     meta["priority"] = p
                         else:
                             continue
@@ -362,7 +360,6 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
                 session.commit()
                 session.refresh(dbt)
                 cleaned.append(TaskOut(id=dbt.id, text=dbt.text, status=dbt.status, priority=dbt.priority))
-
         return cleaned
 
     except HTTPException:
@@ -372,35 +369,5 @@ def generate_tasks(data: TranscriptInput, user: User = Depends(get_current_user)
         print("ERROR in generate_tasks:", str(e), file=sys.stderr)
         print(tb, file=sys.stderr)
         raise HTTPException(status_code=500, detail=f"server exception: {str(e)}")
-
-# ----------------- task CRUD -----------------
-@app.get("/tasks", response_model=List[TaskOut])
-def list_tasks(user: User = Depends(get_current_user)):
-    with Session(engine) as session:
-        stmt = select(DBTask).where(DBTask.user_id == user.id)
-        rows = session.exec(stmt).all()
-        return [TaskOut(id=r.id, text=r.text, status=r.status, priority=r.priority) for r in rows]
-
-@app.post("/tasks/{task_id}/complete")
-def complete_task(task_id: int, user: User = Depends(get_current_user)):
-    with Session(engine) as session:
-        stmt = select(DBTask).where(DBTask.id == task_id, DBTask.user_id == user.id)
-        t = session.exec(stmt).first()
-        if not t:
-            raise HTTPException(status_code=404, detail="not found")
-        t.status = "completed"
-        session.add(t)
-        session.commit()
-        return {"msg": "done"}
-
-@app.delete("/tasks/{task_id}")
-def delete_task(task_id: int, user: User = Depends(get_current_user)):
-    with Session(engine) as session:
-        stmt = select(DBTask).where(DBTask.id == task_id, DBTask.user_id == user.id)
-        t = session.exec(stmt).first()
-        if t:
-            session.delete(t)
-            session.commit()
-    return {"msg": "deleted"}
 
 
