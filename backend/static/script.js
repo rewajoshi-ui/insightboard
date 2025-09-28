@@ -1,3 +1,10 @@
+// static/script.js
+// Robust modal + auth wiring for index.html markup
+// - Uses Tailwind's "hidden" via classList rather than style hacks
+// - Defensive guards against double-binding
+// - Esc to close, backdrop click, data-close on Cancel
+// - Keeps your existing API calls and event delegation intact
+
 window.API_BASE = window.API_BASE || (function(){
   try{
     const o = window.location && window.location.origin;
@@ -13,21 +20,8 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
 
 (function(){
   function safe(q){ try{ return document.querySelector(q); }catch(e){ return null; } }
-  document.body.addEventListener('click', (e) => {
-    const btn = e.target && e.target.closest && e.target.closest('button');
-    if (!btn) return;
-    try {
-      if (typeof btn.onclick === 'function') {
-        try { btn.onclick.call(btn, e); } catch (err) {}
-      }
-      const action = btn.dataset.action || btn.getAttribute('data-action') || btn.id || null;
-      if (action) {
-        const ev = new CustomEvent('app:button-click', { detail: { action, button: btn, originalEvent: e } });
-        document.dispatchEvent(ev);
-      }
-    } catch (err) {}
-  }, true);
 
+  // cached nodes
   const authModal = safe("#auth-modal");
   const modalTitle = safe("#modal-title");
   const authError = safe("#auth-error");
@@ -35,7 +29,7 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
   const emailInput = safe("#email-input");
   const passwordInput = safe("#password-input");
   const authSubmit = safe("#auth-submit");
-  const authCancel = safe("#auth-cancel");
+  const authCancel = safe("[data-close]") || safe("#auth-cancel");
   const showLogin = safe("#show-login");
   const showRegister = safe("#show-register");
   const logoutBtn = safe("#logout-btn");
@@ -44,77 +38,162 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
   const tasksList = safe("#tasks-list");
   const noteEl = safe("#note");
 
+  if(!authModal){
+    console.warn('Auth modal not found: #auth-modal — script will still wire other handlers.');
+  }
+
+  // avoid double bind if script reloaded
+  if(window.__insight_auth_bound) return;
+  window.__insight_auth_bound = true;
+
   function updateAuthUI(){
     const t = getToken();
     if(t){
-      if (showLogin) showLogin.style.display="none";
-      if (showRegister) showRegister.style.display="none";
+      if (showLogin) showLogin.classList.add("hidden");
+      if (showRegister) showRegister.classList.add("hidden");
       if (logoutBtn) logoutBtn.classList.remove("hidden");
-      if (noteEl) noteEl.style.display="none";
+      if (noteEl) noteEl.classList.add("hidden");
     } else {
-      if (showLogin) showLogin.style.display="";
-      if (showRegister) showRegister.style.display="";
+      if (showLogin) showLogin.classList.remove("hidden");
+      if (showRegister) showRegister.classList.remove("hidden");
       if (logoutBtn) logoutBtn.classList.add("hidden");
-      if (noteEl) noteEl.style.display="";
+      if (noteEl) noteEl.classList.remove("hidden");
     }
   }
 
   function openModal(mode){
-    if(authError) authError.classList.add("hidden");
+    if (authError) authError.classList.add("hidden");
     if(!modalTitle) return;
-    if(mode==="login"){
-      modalTitle.textContent="Log in";
-      if(nameInput) nameInput.style.display="none";
+    if(mode === "login"){
+      modalTitle.textContent = "Log in";
+      if(nameInput) nameInput.classList.add("hidden");
     } else {
-      modalTitle.textContent="Register";
-      if(nameInput) nameInput.style.display="";
+      modalTitle.textContent = "Register";
+      if(nameInput) nameInput.classList.remove("hidden");
     }
-    if(authModal){ authModal.classList.remove("hidden"); authModal.style.display="flex"; }
+    if(authModal){
+      authModal.classList.remove("hidden");
+      authModal.style.display = 'flex';
+      const focusable = authModal.querySelector('input, button, [tabindex]:not([tabindex="-1"])');
+      if(focusable) try{ focusable.focus(); }catch(e){}
+      document.documentElement.style.overflow = 'hidden';
+    }
   }
 
   function closeModal(){
-    if(authModal){ authModal.classList.add("hidden"); authModal.style.display="none"; }
+    if(authModal){
+      authModal.classList.add("hidden");
+      authModal.style.display = 'none';
+      document.documentElement.style.overflow = '';
+      if(authError){ authError.classList.add('hidden'); authError.textContent = ''; }
+    }
   }
 
-  if(showLogin) showLogin.addEventListener("click",()=>openModal("login"));
-  if(showRegister) showRegister.addEventListener("click",()=>openModal("register"));
-  if(authCancel) authCancel.addEventListener("click",()=>closeModal());
+  // wire openers (login/register)
+  if(showLogin && !showLogin.__insight_bound){
+    showLogin.addEventListener('click', (e) => { e.preventDefault(); openModal('login'); });
+    showLogin.__insight_bound = true;
+  }
 
-  if(logoutBtn) logoutBtn.addEventListener("click",()=>{ setToken(null); updateAuthUI(); if(tasksList) tasksList.innerHTML=""; try{ renderChart(0,0); }catch{} });
+  if(showRegister && !showRegister.__insight_bound){
+    showRegister.addEventListener('click', (e) => { e.preventDefault(); openModal('register'); });
+    showRegister.__insight_bound = true;
+  }
 
-  if(authSubmit) authSubmit.addEventListener("click", async ()=>{
-    const mode = modalTitle && modalTitle.textContent.toLowerCase().includes("register") ? "register" : "login";
-    const email = emailInput ? emailInput.value.trim() : "";
-    const password = passwordInput ? passwordInput.value : "";
-    const name = nameInput ? nameInput.value.trim() : "";
-    if(authError) authError.classList.add("hidden");
-    if(!email || !password){ if(authError){ authError.textContent="Enter email and password"; authError.classList.remove("hidden"); } return; }
-    const payload = mode==="register" ? {email,password,name} : {email,password};
-    try{
-      const res = await fetch(`${window.API_BASE}/${mode}`, {
-        method:"POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json().catch(()=>({}));
-      if(!res.ok){ if(authError){ authError.textContent = (data.detail && typeof data.detail === "string") ? data.detail : JSON.stringify(data); authError.classList.remove("hidden"); } return; }
-      setToken(data.access_token);
-      closeModal();
-      updateAuthUI();
-      await fetchAndRenderTasks();
-    }catch(e){
-      if(authError){ authError.textContent="Network error"; authError.classList.remove("hidden"); }
-    }
-  });
+  // data-close (cancel)
+  if(authCancel && !authCancel.__insight_close_bound){
+    authCancel.addEventListener('click', (e) => { e.preventDefault(); closeModal(); });
+    authCancel.__insight_close_bound = true;
+  }
 
+  // backdrop click: assume authModal is the backdrop
+  if(authModal && !authModal.__insight_backdrop_bound){
+    authModal.addEventListener('click', (e) => {
+      if(e.target === authModal) closeModal();
+    });
+    authModal.__insight_backdrop_bound = true;
+  }
+
+  // Esc to close
+  if(!window.__insight_esc_bound){
+    document.addEventListener('keydown', (e) => {
+      const shown = authModal && getComputedStyle(authModal).display !== 'none';
+      if((e.key === 'Escape' || e.key === 'Esc') && shown) closeModal();
+    });
+    window.__insight_esc_bound = true;
+  }
+
+  // submit logic (unchanged semantics, just defensive)
+  if(authSubmit && !authSubmit.__insight_submit_bound){
+    authSubmit.addEventListener('click', async (ev) => {
+      ev && ev.preventDefault && ev.preventDefault();
+      const mode = modalTitle && modalTitle.textContent && modalTitle.textContent.toLowerCase().includes("register") ? "register" : "login";
+      const email = emailInput ? emailInput.value.trim() : "";
+      const password = passwordInput ? passwordInput.value : "";
+      const name = nameInput ? nameInput.value.trim() : "";
+      if(authError) authError.classList.add("hidden");
+      if(!email || !password){ if(authError){ authError.textContent="Enter email and password"; authError.classList.remove("hidden"); } return; }
+      const payload = mode === "register" ? {email,password,name} : {email,password};
+      try{
+        const res = await fetch(`${window.API_BASE}/${mode}`, {
+          method:"POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(()=>({}));
+        if(!res.ok){ if(authError){ authError.textContent = (data.detail && typeof data.detail === "string") ? data.detail : JSON.stringify(data); authError.classList.remove("hidden"); } return; }
+        setToken(data.access_token);
+        closeModal();
+        updateAuthUI();
+        await fetchAndRenderTasks();
+      }catch(e){
+        if(authError){ authError.textContent="Network error"; authError.classList.remove("hidden"); }
+      }
+    });
+    authSubmit.__insight_submit_bound = true;
+  }
+
+  // logout
+  if(logoutBtn && !logoutBtn.__insight_bound){
+    logoutBtn.addEventListener("click", ()=>{ setToken(null); updateAuthUI(); if(tasksList) tasksList.innerHTML=""; try{ renderChart(0,0); }catch{} });
+    logoutBtn.__insight_bound = true;
+  }
+
+  // generate button
+  if(generateBtn && !generateBtn.__insight_bound){
+    generateBtn.addEventListener("click", async ()=> {
+      const token = getToken();
+      if(!token){ openModal("login"); return; }
+      const text = transcriptEl ? transcriptEl.value.trim() : "";
+      if(!text) return;
+      generateBtn.disabled = true;
+      const origText = generateBtn.textContent;
+      generateBtn.textContent = "Generating...";
+      try{
+        const res = await fetch(`${window.API_BASE}/generate-tasks`, {
+          method:"POST",
+          headers: {"Content-Type":"application/json", Authorization:"Bearer "+token},
+          body: JSON.stringify({transcript:text})
+        });
+        const data = await res.json().catch(()=>({}));
+        if(!res.ok){ alert("Server error: "+JSON.stringify(data)); return; }
+        if(transcriptEl) transcriptEl.value = "";
+        await fetchAndRenderTasks();
+      }catch(e){ alert("Network error"); }
+      finally{ generateBtn.disabled=false; generateBtn.textContent = origText || "Generate Tasks"; }
+    });
+    generateBtn.__insight_bound = true;
+  }
+
+  // tasks fetch/render
   async function fetchAndRenderTasks(){
     if(!tasksList) return;
-    tasksList.innerHTML="";
+    tasksList.innerHTML = "";
     const token = getToken();
     if(!token) return;
     try{
       const res = await fetch(`${window.API_BASE}/tasks`, {headers: {Authorization: "Bearer "+token}});
-      if(res.status===401){ setToken(null); updateAuthUI(); return; }
+      if(res.status === 401){ setToken(null); updateAuthUI(); return; }
       const data = await res.json().catch(()=>[]);
       let completed=0, pending=0;
       if(Array.isArray(data)){
@@ -134,6 +213,7 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
     }catch(e){}
   }
 
+  // click events forwarded by the app-level delegation
   document.addEventListener("app:button-click", async (ev)=>{
     const { action, button } = ev.detail || {};
     if(!action) return;
@@ -149,28 +229,6 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
         await fetchAndRenderTasks();
       }catch(e){}
     }
-  });
-
-  if(generateBtn) generateBtn.addEventListener("click", async ()=>{
-    const token = getToken();
-    if(!token){ openModal("login"); return; }
-    const text = transcriptEl ? transcriptEl.value.trim() : "";
-    if(!text) return;
-    generateBtn.disabled=true;
-    const origText = generateBtn.textContent;
-    generateBtn.textContent="Generating..."
-    try{
-      const res = await fetch(`${window.API_BASE}/generate-tasks`, {
-        method:"POST",
-        headers: {"Content-Type":"application/json", Authorization:"Bearer "+token},
-        body: JSON.stringify({transcript:text})
-      });
-      const data = await res.json().catch(()=>({}));
-      if(!res.ok){ alert("Server error: "+JSON.stringify(data)); return; }
-      if(transcriptEl) transcriptEl.value="";
-      await fetchAndRenderTasks();
-    }catch(e){ alert("Network error"); }
-    finally{ generateBtn.disabled=false; generateBtn.textContent = origText || "Generate Tasks"; }
   });
 
   function renderChart(completed,pending){
@@ -192,7 +250,8 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
     }catch(e){}
   }
 
+  // initial UI
   updateAuthUI();
   fetchAndRenderTasks();
-})();
 
+})();
