@@ -226,9 +226,7 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
       try{
         if(action === "complete") await fetch(`${window.API_BASE}/tasks/${id}/complete`, {method:"POST", headers:{Authorization:"Bearer "+token}});
         else await fetch(`${window.API_BASE}/tasks/${id}`, {method:"DELETE", headers:{Authorization:"Bearer "+token}});
-      if (typeof window.fetchAndRenderTasks === 'function') {
-  await window.fetchAndRenderTasks();
-}
+        await fetchAndRenderTasks();
       }catch(e){}
     }
   });
@@ -255,8 +253,5 @@ function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<
   // initial UI
   updateAuthUI();
   fetchAndRenderTasks();
-
-  // expose fetchAndRenderTasks so delegated handlers can use it
-window.fetchAndRenderTasks = fetchAndRenderTasks;
 
 })();
