@@ -1,38 +1,48 @@
-const API_BASE = window.location.origin;
+window.API_BASE = window.API_BASE || (function(){
+  try{
+    const o = window.location && window.location.origin;
+    if(o && !o.startsWith('file:')) return o;
+  }catch(e){}
+  return 'http://127.0.0.1:8000';
+})();
+
 const getToken = () => localStorage.getItem("access_token");
 const setToken = (t) => { if (t) localStorage.setItem("access_token", t); else localStorage.removeItem("access_token"); };
 
-function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c])); }
 
-document.addEventListener('DOMContentLoaded', () => {
+(function(){
+  function safe(q){ try{ return document.querySelector(q); }catch(e){ return null; } }
   document.body.addEventListener('click', (e) => {
-    const btn = e.target.closest && e.target.closest('button');
+    const btn = e.target && e.target.closest && e.target.closest('button');
     if (!btn) return;
     try {
-      if (typeof btn.onclick === 'function') { try { btn.onclick.call(btn, e); } catch (err) { console.error(err); } }
+      if (typeof btn.onclick === 'function') {
+        try { btn.onclick.call(btn, e); } catch (err) {}
+      }
       const action = btn.dataset.action || btn.getAttribute('data-action') || btn.id || null;
       if (action) {
         const ev = new CustomEvent('app:button-click', { detail: { action, button: btn, originalEvent: e } });
         document.dispatchEvent(ev);
       }
-    } catch (err) { console.error(err); }
+    } catch (err) {}
   }, true);
 
-  const authModal = document.getElementById("auth-modal");
-  const modalTitle = document.getElementById("modal-title");
-  const authError = document.getElementById("auth-error");
-  const nameInput = document.getElementById("name-input");
-  const emailInput = document.getElementById("email-input");
-  const passwordInput = document.getElementById("password-input");
-  const authSubmit = document.getElementById("auth-submit");
-  const authCancel = document.getElementById("auth-cancel");
-  const showLogin = document.getElementById("show-login");
-  const showRegister = document.getElementById("show-register");
-  const logoutBtn = document.getElementById("logout-btn");
-  const generateBtn = document.getElementById("generate-btn");
-  const transcriptEl = document.getElementById("transcript");
-  const tasksList = document.getElementById("tasks-list");
-  const noteEl = document.getElementById("note");
+  const authModal = safe("#auth-modal");
+  const modalTitle = safe("#modal-title");
+  const authError = safe("#auth-error");
+  const nameInput = safe("#name-input");
+  const emailInput = safe("#email-input");
+  const passwordInput = safe("#password-input");
+  const authSubmit = safe("#auth-submit");
+  const authCancel = safe("#auth-cancel");
+  const showLogin = safe("#show-login");
+  const showRegister = safe("#show-register");
+  const logoutBtn = safe("#logout-btn");
+  const generateBtn = safe("#generate-btn");
+  const transcriptEl = safe("#transcript");
+  const tasksList = safe("#tasks-list");
+  const noteEl = safe("#note");
 
   function updateAuthUI(){
     const t = getToken();
@@ -81,7 +91,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if(!email || !password){ if(authError){ authError.textContent="Enter email and password"; authError.classList.remove("hidden"); } return; }
     const payload = mode==="register" ? {email,password,name} : {email,password};
     try{
-      const res = await fetch(`${API_BASE}/${mode}`, {
+      const res = await fetch(`${window.API_BASE}/${mode}`, {
         method:"POST",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify(payload)
@@ -103,7 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const token = getToken();
     if(!token) return;
     try{
-      const res = await fetch(`${API_BASE}/tasks`, {headers: {Authorization: "Bearer "+token}});
+      const res = await fetch(`${window.API_BASE}/tasks`, {headers: {Authorization: "Bearer "+token}});
       if(res.status===401){ setToken(null); updateAuthUI(); return; }
       const data = await res.json().catch(()=>[]);
       let completed=0, pending=0;
@@ -134,26 +144,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const token = getToken();
       if(!token) return;
       try{
-        if(action === "complete") await fetch(`${API_BASE}/tasks/${id}/complete`, {method:"POST", headers:{Authorization:"Bearer "+token}});
-        else await fetch(`${API_BASE}/tasks/${id}`, {method:"DELETE", headers:{Authorization:"Bearer "+token}});
+        if(action === "complete") await fetch(`${window.API_BASE}/tasks/${id}/complete`, {method:"POST", headers:{Authorization:"Bearer "+token}});
+        else await fetch(`${window.API_BASE}/tasks/${id}`, {method:"DELETE", headers:{Authorization:"Bearer "+token}});
         await fetchAndRenderTasks();
       }catch(e){}
     }
-  });
-
-  document.addEventListener("click", async (e)=>{
-    const btn = e.target.closest("button[data-id]");
-    if(!btn) return;
-    const id = btn.getAttribute("data-id");
-    const action = btn.getAttribute("data-action");
-    const token = getToken();
-    if(!token) return;
-    if(action==="complete"){
-      await fetch(`${API_BASE}/tasks/${id}/complete`, {method:"POST", headers:{Authorization:"Bearer "+token}});
-    } else {
-      await fetch(`${API_BASE}/tasks/${id}`, {method:"DELETE", headers:{Authorization:"Bearer "+token}});
-    }
-    await fetchAndRenderTasks();
   });
 
   if(generateBtn) generateBtn.addEventListener("click", async ()=>{
@@ -165,7 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const origText = generateBtn.textContent;
     generateBtn.textContent="Generating..."
     try{
-      const res = await fetch(`${API_BASE}/generate-tasks`, {
+      const res = await fetch(`${window.API_BASE}/generate-tasks`, {
         method:"POST",
         headers: {"Content-Type":"application/json", Authorization:"Bearer "+token},
         body: JSON.stringify({transcript:text})
@@ -199,4 +194,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
   updateAuthUI();
   fetchAndRenderTasks();
-});
+})();
+
